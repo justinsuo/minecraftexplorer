@@ -1,0 +1,11 @@
+{"timestamp": 1764742273.131451, "type": "fire_detected", "data": {"count": 6}}
+{"timestamp": 1764742369.258358, "type": "fire_suppressed", "data": {"count": 0, "total_suppressed": 0}}
+{"timestamp": 1764742377.7785332, "type": "fire_detected", "data": {"count": 1}}
+{"timestamp": 1764742457.9060988, "type": "fire_suppressed", "data": {"count": 1, "total_suppressed": 1}}
+{"timestamp": 1764742466.4261062, "type": "fire_detected", "data": {"count": 1}}
+{"timestamp": 1764742514.4894469, "type": "fire_suppressed", "data": {"count": 0, "total_suppressed": 1}}
+{"timestamp": 1764742905.705698, "type": "fire_detected", "data": {"count": 1}}
+{"timestamp": 1764743949.6799302, "type": "fire_detected", "data": {"count": 1}}
+{"timestamp": 1764744221.8655932, "type": "fire_detected", "data": {"count": 3}}
+{"timestamp": 1764744878.78472, "type": "fire_suppressed", "data": {"count": 1, "total_suppressed": 1}}
+{"timestamp": 1764744883.29857, "type": "fire_detected", "data": {"count": 1}}
