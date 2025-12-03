@@ -17,61 +17,104 @@ bot.loadPlugin(pathfinder);
 let mcData;
 bot.once('spawn', () => {
   mcData = require('minecraft-data')(bot.version);
-  bot.chat('✅ FireBot online - Ready to fight fires!');
+  bot.chat('✅ FireBot online!');
   
   // Give bot equipment
   setTimeout(() => {
-    bot.chat('/give @s minecraft:water_bucket 64');
-    bot.chat('/give @s minecraft:bucket 10');
-  }, 1000);
+    bot.chat('/give @s minecraft:diamond_sword 1');
+    bot.chat('/give @s minecraft:diamond_axe 1');
+    bot.chat('/give @s minecraft:water_bucket 10');
+    bot.chat('/give @s minecraft:bow 1');
+    bot.chat('/give @s minecraft:arrow 64');
+  }, 500);
 });
 
 // ============================================================================
-// FEATURE 1: Smart Fire Prioritization
+// EQUIPMENT MANAGEMENT
 // ============================================================================
-function prioritizeFires(fires) {
-  return fires
-    .map(pos => ({
-      pos: pos,
-      distance: bot.entity.position.distanceTo(pos),
-      priority: calculatePriority(pos)
-    }))
-    .sort((a, b) => b.priority - a.priority || a.distance - b.distance)
-    .map(f => f.pos);
-}
-
-function calculatePriority(firePos) {
-  // Check for flammable blocks nearby (high priority)
-  const flammable = ['oak_log', 'oak_planks', 'spruce_log', 'spruce_planks', 
-                     'birch_log', 'birch_planks', 'wool', 'oak_leaves'];
+async function equipItem(itemName) {
+  const item = bot.inventory.items().find(i => 
+    i.name.includes(itemName)
+  );
   
-  const nearbyBlocks = [
-    firePos.offset(1, 0, 0), firePos.offset(-1, 0, 0),
-    firePos.offset(0, 0, 1), firePos.offset(0, 0, -1),
-    firePos.offset(0, 1, 0), firePos.offset(0, -1, 0)
-  ];
-  
-  let flammableCount = 0;
-  nearbyBlocks.forEach(pos => {
-    const block = bot.blockAt(pos);
-    if (block && flammable.includes(block.name)) {
-      flammableCount++;
+  if (!item) {
+    bot.chat(`⚠️ Don't have ${itemName}`);
+    
+    // Auto-request item
+    bot.chat(`/give @s minecraft:${itemName} 1`);
+    await sleep(500);
+    
+    const newItem = bot.inventory.items().find(i => i.name.includes(itemName));
+    if (newItem) {
+      await bot.equip(newItem, 'hand');
+      return true;
     }
-  });
+    return false;
+  }
   
-  if (flammableCount > 3) return 100; // CRITICAL
-  if (flammableCount > 1) return 50;  // HIGH
-  return 10; // NORMAL
+  await bot.equip(item, 'hand');
+  bot.chat(`✓ Equipped ${item.name}`);
+  return true;
 }
 
 // ============================================================================
-// FEATURE 2: Smart Pathfinding
+// PATROL SYSTEM
+// ============================================================================
+let patrolIndex = 0;
+let patrolPoints = [];
+let patrolCenter = null;
+
+function generatePatrolRoute() {
+  if (!patrolCenter) {
+    patrolCenter = bot.entity.position.clone();
+  }
+  
+  const radius = 50;
+  patrolPoints = [];
+  
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    patrolPoints.push({
+      x: Math.floor(patrolCenter.x + Math.cos(angle) * radius),
+      y: Math.floor(patrolCenter.y),
+      z: Math.floor(patrolCenter.z + Math.sin(angle) * radius)
+    });
+  }
+  
+  bot.chat(`📍 Patrol route generated: 8 waypoints`);
+}
+
+async function patrol() {
+  if (patrolPoints.length === 0) {
+    generatePatrolRoute();
+  }
+  
+  const target = patrolPoints[patrolIndex];
+  
+  const movements = new Movements(bot, mcData);
+  movements.canDig = false;
+  movements.allow1by1towers = false;
+  
+  bot.pathfinder.setMovements(movements);
+  
+  const goal = new GoalNear(target.x, target.y, target.z, 5);
+  
+  try {
+    bot.pathfinder.setGoal(goal);
+    patrolIndex = (patrolIndex + 1) % patrolPoints.length;
+  } catch (err) {
+    bot.chat(`⚠️ Patrol error: ${err.message}`);
+    patrolIndex = (patrolIndex + 1) % patrolPoints.length;
+  }
+}
+
+// ============================================================================
+// NAVIGATION
 // ============================================================================
 async function navigateToFire(firePos) {
   const movements = new Movements(bot, mcData);
   movements.canDig = false;
   movements.allow1by1towers = false;
-  movements.scafoldingBlocks = [];
   
   bot.pathfinder.setMovements(movements);
   
@@ -87,34 +130,15 @@ async function navigateToFire(firePos) {
 }
 
 // ============================================================================
-// FEATURE 3: Water Management
-// ============================================================================
-function checkWaterSupply() {
-  const buckets = bot.inventory.items().filter(i => 
-    i.name === 'water_bucket'
-  );
-  
-  const bucketCount = buckets.reduce((sum, item) => sum + item.count, 0);
-  
-  if (bucketCount < 5) {
-    bot.chat(`⚠️ LOW WATER: ${bucketCount} buckets remaining`);
-    return 'LOW';
-  }
-  
-  return 'OK';
-}
-
-// ============================================================================
-// FEATURE 4: Improved Fire Suppression
+// FIRE SUPPRESSION (with sword)
 // ============================================================================
 async function suppressFire() {
-  bot.chat('🚒 Starting suppression...');
+  bot.chat('⚔️ Attacking fires!');
   
-  // Find fires
   const fires = bot.findBlocks({
     matching: (block) => block.name === 'fire',
     maxDistance: 5,
-    count: 20
+    count: 30
   });
   
   if (fires.length === 0) {
@@ -124,88 +148,39 @@ async function suppressFire() {
   
   bot.chat(`Found ${fires.length} fires`);
   
-  // Equip water bucket
-  const waterBucket = bot.inventory.items().find(i => i.name === 'water_bucket');
+  // Equip sword
+  await equipItem('sword');
   
-  if (!waterBucket) {
-    bot.chat('/give @s minecraft:water_bucket 64');
-    await sleep(50);
-  }
-  
-  await bot.equip(waterBucket, 'hand');
-  
-  // Simple approach: activate water bucket while looking at fire
   let extinguished = 0;
   
-  for (const firePos of fires.slice(0, 10)) {
+  for (const firePos of fires) {
     try {
-      // Look at fire
-      await bot.lookAt(firePos.offset(0.5, 0.5, 0.5));
-      await sleep(200);
+      const fireBlock = bot.blockAt(firePos);
       
-      // Right-click (use item)
-      bot.activateItem();
-      await sleep(500);
-      
-      extinguished++;
-      bot.chat(`💧 Extinguished ${extinguished}/${fires.length}`);
-      
+      if (fireBlock && fireBlock.name === 'fire') {
+        await bot.lookAt(firePos.offset(0.5, 0.5, 0.5));
+        await sleep(50);
+        
+        await bot.dig(fireBlock);
+        
+        extinguished++;
+        
+        if (extinguished % 5 === 0) {
+          bot.chat(`⚔️ ${extinguished}/${fires.length} destroyed`);
+        }
+        
+        await sleep(100);
+      }
     } catch (err) {
-      console.log(`Error: ${err.message}`);
+      console.log(`Failed: ${err.message}`);
     }
   }
   
-  bot.chat(`✅ Done! ${extinguished} fires out`);
+  bot.chat(`✅ ${extinguished} fires extinguished!`);
 }
 
 // ============================================================================
-// FEATURE 5: Patrol System
-// ============================================================================
-let patrolIndex = 0;
-const patrolPoints = [];
-
-function generatePatrolRoute() {
-  const center = bot.entity.position;
-  const radius = 40;
-  
-  // Create 8 patrol points in a circle
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2;
-    patrolPoints.push({
-      x: Math.floor(center.x + Math.cos(angle) * radius),
-      y: Math.floor(center.y),
-      z: Math.floor(center.z + Math.sin(angle) * radius)
-    });
-  }
-  
-  bot.chat(`📍 Patrol route generated: ${patrolPoints.length} waypoints`);
-}
-
-async function patrol() {
-  if (patrolPoints.length === 0) {
-    generatePatrolRoute();
-  }
-  
-  const target = patrolPoints[patrolIndex];
-  patrolIndex = (patrolIndex + 1) % patrolPoints.length;
-  
-  const movements = new Movements(bot, mcData);
-  movements.canDig = false;
-  bot.pathfinder.setMovements(movements);
-  
-  const goal = new GoalNear(target.x, target.y, target.z, 3);
-  
-  try {
-    await bot.pathfinder.goto(goal);
-    bot.chat(`✓ Reached waypoint ${patrolIndex}/${patrolPoints.length}`);
-  } catch (err) {
-    bot.chat(`⚠️ Patrol stuck, recalculating...`);
-    patrolIndex = (patrolIndex + 1) % patrolPoints.length;
-  }
-}
-
-// ============================================================================
-// Command Handler
+// COMMAND HANDLER
 // ============================================================================
 setInterval(async () => {
   if (!fs.existsSync('command.json')) return;
@@ -214,7 +189,6 @@ setInterval(async () => {
   fs.unlinkSync('command.json');
   
   if (cmd.action === 'goto') {
-    bot.chat(`🎯 Navigating to fire...`);
     await navigateToFire(new Vec3(cmd.x, cmd.y, cmd.z));
   }
   
@@ -226,18 +200,20 @@ setInterval(async () => {
     await patrol();
   }
   
-  if (cmd.action === 'status') {
-    const waterCount = bot.inventory.items()
-      .filter(i => i.name === 'water_bucket')
-      .reduce((sum, i) => sum + i.count, 0);
-    
-    bot.chat(`Status: ${waterCount} water buckets, Position: ${bot.entity.position}`);
+  if (cmd.action === 'equip') {
+    await equipItem(cmd.item);
+  }
+  
+  if (cmd.action === 'reset_patrol') {
+    patrolCenter = bot.entity.position.clone();
+    patrolPoints = [];
+    generatePatrolRoute();
   }
   
 }, 500);
 
 // ============================================================================
-// Fire Scanner (runs continuously)
+// FIRE SCANNER
 // ============================================================================
 setInterval(() => {
   const fires = bot.findBlocks({
@@ -246,12 +222,17 @@ setInterval(() => {
     count: 50
   });
   
-  const prioritized = fires.length > 0 ? prioritizeFires(fires) : [];
+  // Convert positions to objects with x,y,z
+  const firePositions = fires.map(pos => ({
+    x: pos.x,
+    y: pos.y,
+    z: pos.z
+  }));
   
   fs.writeFileSync('fire_data.json', JSON.stringify({
-    fires: prioritized,
+    fires: firePositions,  // Changed this line
     fire_count: fires.length,
-    position: bot.entity.position,
+    position: bot.entity ? bot.entity.position : {},
     water_buckets: bot.inventory.items()
       .filter(i => i.name === 'water_bucket')
       .reduce((sum, i) => sum + i.count, 0),
@@ -264,7 +245,6 @@ function sleep(ms) {
 }
 
 bot.on('error', (err) => console.error('❌ Bot error:', err));
-bot.on('kicked', (reason) => console.log('🚫 Bot kicked:', reason));
-bot.on('end', () => console.log('Bot disconnected'));
+bot.on('kicked', (reason) => console.log('🚫 Kicked:', reason));
 
 console.log('🤖 FireBot starting...');
