@@ -1,0 +1,31 @@
+# Bot state files (constantly changing)
+fire_data.json
+bot_view.json
+command.json
+bot_state.json
+
+# Logs
+logs/
+*.log
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

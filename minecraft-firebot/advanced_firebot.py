@@ -1,11 +1,10 @@
 """
-Advanced FireBot - Full Version
+Advanced FireBot - Smart Fire Detection & Suppression
 Features:
-- Continuous patrol system
-- Multi-item equipment switching
-- Bot view monitoring
-- Fire prioritization
-- Event logging
+- Smart patrol (explores widely, not circles)
+- Prioritizes closest fires first
+- Handles large fire scenarios
+- Adaptive behavior based on results
 """
 
 import subprocess
@@ -13,20 +12,22 @@ import time
 import json
 from pathlib import Path
 
-# Create logs directory
 Path("logs").mkdir(exist_ok=True)
 
-# Start Node.js bot
 print("🚀 Starting FireBot...")
 bot_process = subprocess.Popen(['node', 'autobot.js'])
 time.sleep(5)
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 def send_command(action, **kwargs):
     """Send command to bot"""
     cmd = {'action': action, **kwargs}
     with open('command.json', 'w') as f:
         json.dump(cmd, f)
-    time.sleep(0.3)
+    time.sleep(0.2)
 
 def get_fire_data():
     """Read fire data from bot"""
@@ -34,23 +35,14 @@ def get_fire_data():
         with open('fire_data.json', 'r') as f:
             return json.load(f)
     except:
-        return {'fires': [], 'fire_count': 0, 'position': {}}
+        return {
+            'fires': [], 
+            'fire_count': 0, 
+            'position': {'x': 0, 'y': 0, 'z': 0},
+            'health': 20,
+            'food': 20
+        }
 
-def get_bot_view():
-    """Read what bot is looking at"""
-    return {'looking_at': 'disabled', 'position': {}, 'health': 20, 'food': 20}
-  
-def log_event(event_type, data):
-    """Log events for analysis"""
-    log_entry = {
-        'timestamp': time.time(),
-        'type': event_type,
-        'data': data
-    }
-    
-    with open('logs/events.jsonl', 'a') as f:
-        f.write(json.dumps(log_entry) + '\n')
-        
 def calculate_distance(pos1, pos2):
     """Calculate distance between two positions"""
     try:
@@ -61,13 +53,21 @@ def calculate_distance(pos1, pos2):
     except:
         return 0
 
-def calculate_priority(fire_data):
-    """Calculate fire urgency"""
-    fire_count = fire_data.get('fire_count', 0)
-    
-    if fire_count > 15:
+def log_event(event_type, data):
+    """Log events"""
+    log_entry = {
+        'timestamp': time.time(),
+        'type': event_type,
+        'data': data
+    }
+    with open('logs/events.jsonl', 'a') as f:
+        f.write(json.dumps(log_entry) + '\n')
+
+def calculate_priority(fire_count):
+    """Calculate urgency"""
+    if fire_count > 20:
         return 'CRITICAL'
-    elif fire_count > 8:
+    elif fire_count > 10:
         return 'HIGH'
     elif fire_count > 3:
         return 'MEDIUM'
@@ -76,176 +76,188 @@ def calculate_priority(fire_data):
     else:
         return 'NONE'
 
-# State machine
+# ============================================================================
+# STATE MACHINE
+# ============================================================================
+
 state = 'PATROL'
 last_patrol = 0
-last_status_print = 0
+last_fire_check = 0
 fires_suppressed_total = 0
-fires_detected_total = 0
 patrol_cycles = 0
-current_fire_count = 0
+stuck_counter = 0
+last_position = None
 
 print("\n" + "="*70)
-print("🤖 ADVANCED FIREBOT - AUTONOMOUS MODE")
+print("🤖 SMART FIREBOT - ACTIVE")
 print("="*70)
-print("\nFeatures enabled:")
-print("  ✓ Continuous patrol system (8 waypoints, 50m radius)")
-print("  ✓ Smart fire prioritization")
-print("  ✓ Multi-item equipment (sword, axe, water, bow)")
-print("  ✓ Bot view monitoring")
+print("\nCapabilities:")
+print("  ✓ Wide-area patrol (explores randomly)")
+print("  ✓ Prioritizes closest fires")
+print("  ✓ Smart fire suppression (handles large fires)")
+print("  ✓ Gets unstuck automatically")
 print("  ✓ Event logging")
-print("  ✓ Real-time status display")
 print("\n" + "="*70 + "\n")
 
 try:
     while True:
         current_time = time.time()
-        
-        # Get current data
         data = get_fire_data()
-        view = get_bot_view()
-        fire_count = data.get('fire_count', 0)
-        priority = calculate_priority(data)
         
-        # Real-time status (every 2 seconds)
-        if current_time - last_status_print > 2:
-            pos = view.get('position', {})
-            pos_str = f"({pos.get('x', 0):.1f}, {pos.get('y', 0):.1f}, {pos.get('z', 0):.1f})"
-            
-            status_line = (
-                f"\r[{state:8s}] "
-                f"Fires: {fire_count:2d} ({priority:8s}) | "
-                f"Looking: {view.get('looking_at', 'unknown'):15s} | "
-                f"Pos: {pos_str:25s} | "
-                f"HP: {view.get('health', 0):2.0f} | "
-                f"Patrols: {patrol_cycles:3d} | "
-                f"Suppressed: {fires_suppressed_total:3d}"
-            )
-            print(status_line, end='', flush=True)
-            last_status_print = current_time
+        fire_count = data.get('fire_count', 0)
+        position = data.get('position', {})
+        priority = calculate_priority(fire_count)
+        
+        # Check if bot is stuck
+        if last_position:
+            dist_moved = calculate_distance(position, last_position)
+            if dist_moved < 1.0:
+                stuck_counter += 1
+            else:
+                stuck_counter = 0
+        
+        last_position = position.copy()
+        
+        # Handle stuck situation
+        if stuck_counter > 8:
+            print("\n⚠️  BOT APPEARS STUCK - Resetting patrol")
+            send_command('patrol')
+            stuck_counter = 0
+            time.sleep(3)
+            continue
+        
+        # Status display
+        pos_str = f"({position.get('x', 0):.0f}, {position.get('y', 0):.0f}, {position.get('z', 0):.0f})"
+        status = (
+            f"\r[{state:10s}] Fires: {fire_count:3d} ({priority:8s}) | "
+            f"Pos: {pos_str:20s} | HP: {data.get('health', 20):2.0f} | "
+            f"Patrols: {patrol_cycles:3d} | Suppressed: {fires_suppressed_total:3d}"
+        )
+        print(status, end='', flush=True)
         
         # ====================================================================
         # STATE: PATROL
         # ====================================================================
         if state == 'PATROL':
             if fire_count > 0:
-                # Fire detected!
-                print(f"\n\n🔥 FIRE DETECTED: {fire_count} blocks | Priority: {priority}")
-                
-                fires_detected_total += 1
-                current_fire_count = fire_count
+                print(f"\n\n🔥 FIRE DETECTED!")
+                print(f"   Fire blocks: {fire_count}")
+                print(f"   Priority: {priority}")
                 
                 log_event('fire_detected', {
                     'fire_count': fire_count,
                     'priority': priority,
-                    'position': data.get('position')
+                    'position': position
                 })
                 
-                state = 'RESPOND'
+                state = 'ASSESS'
             
             else:
-                # No fires - keep patrolling
-                if current_time - last_patrol > 3:
+                # Continue patrolling
+                if current_time - last_patrol > 8:
                     send_command('patrol')
                     patrol_cycles += 1
                     last_patrol = current_time
         
         # ====================================================================
-        # STATE: RESPOND
+        # STATE: ASSESS (Evaluate fire situation)
         # ====================================================================
-        elif state == 'RESPOND':
-            if fire_count > 0:
-                # Get closest fire
-                fires = data.get('fires', [])
-                if len(fires) > 0:
-                    closest = fires[0]
-                    
-                    print(f"\n🎯 Responding to fire at ({closest['x']}, {closest['y']}, {closest['z']})")
-                    print(f"   Distance: ~{calculate_distance(view.get('position', {}), closest):.1f} blocks")
-                    
-                    # Equip sword for fire fighting
-                    print("   ⚔️  Equipping sword...")
-                    send_command('equip', item='sword')
-                    time.sleep(0.5)
-                    
-                    # Navigate to fire
-                    print("   🏃 Moving to fire location...")
-                    send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
-                    
-                    time.sleep(3)  # Give time to navigate
-                    state = 'SUPPRESS'
-                else:
-                    print("\n✓ Fire data unavailable, returning to patrol")
-                    state = 'PATROL'
-            else:
-                print("\n✓ Fire extinguished or out of range")
-                state = 'PATROL'
+        elif state == 'ASSESS':
+            fires = data.get('fires', [])
+            
+            if len(fires) == 0:
+                print("\n✓ Fire data not ready, waiting...")
+                time.sleep(1)
+                continue
+            
+            # Get closest fire
+            closest = fires[0]
+            distance = calculate_distance(position, closest)
+            
+            print(f"\n📊 FIRE ASSESSMENT:")
+            print(f"   Total fires: {fire_count}")
+            print(f"   Closest fire: ({closest['x']}, {closest['y']}, {closest['z']})")
+            print(f"   Distance: {distance:.1f} blocks")
+            print(f"   Strategy: {'SUPPRESS IMMEDIATELY' if fire_count < 15 else 'TACKLE IN BATCHES'}")
+            
+            state = 'RESPOND'
         
         # ====================================================================
-        # STATE: SUPPRESS
+        # STATE: RESPOND (Navigate to fire)
+        # ====================================================================
+        elif state == 'RESPOND':
+            fires = data.get('fires', [])
+            
+            if len(fires) == 0:
+                print("\n✓ No fires detected anymore")
+                state = 'PATROL'
+                continue
+            
+            closest = fires[0]
+            distance = calculate_distance(position, closest)
+            
+            # If close enough, suppress
+            if distance < 8:
+                print(f"\n🎯 In range of fire (distance: {distance:.1f}m)")
+                state = 'SUPPRESS'
+            else:
+                print(f"\n🏃 Moving toward fire (distance: {distance:.1f}m)")
+                send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
+                time.sleep(4)
+        
+        # ====================================================================
+        # STATE: SUPPRESS (Attack fires)
         # ====================================================================
         elif state == 'SUPPRESS':
             print("\n⚔️  ENGAGING FIRE SUPPRESSION")
-            print("   Using sword to destroy fire blocks...")
             
+            initial_count = fire_count
+            
+            # Equip weapon first
+            send_command('equip_weapon')
+            time.sleep(0.5)
+            
+            # Suppress fires
             send_command('suppress')
             
-            time.sleep(6)  # Give time to extinguish fires
+            # Wait for suppression to complete
+            time.sleep(8)
             
             # Check results
             data = get_fire_data()
-            remaining_fires = data.get('fire_count', 0)
+            remaining = data.get('fire_count', 0)
+            destroyed = initial_count - remaining
             
-            if remaining_fires > 0:
-                print(f"\n⚠️  {remaining_fires} fires still burning (started with {current_fire_count})")
-                print(f"   Extinguished: {current_fire_count - remaining_fires} fires")
-                
-                if remaining_fires < current_fire_count:
-                    # Making progress
-                    current_fire_count = remaining_fires
-                    print("   ✓ Making progress - continuing suppression")
-                    state = 'RESPOND'
-                else:
-                    # Not making progress
-                    print("   ⚠️  No progress - may be stuck")
-                    print("   Attempting different approach...")
-                    state = 'RESPOND'
-                
-                log_event('fire_partial_suppression', {
-                    'remaining': remaining_fires,
-                    'progress': current_fire_count - remaining_fires
-                })
-            
-            else:
-                # Success!
-                fires_suppressed_total += current_fire_count
-                
-                print(f"\n✅ FIRE EXTINGUISHED!")
-                print(f"   Destroyed {current_fire_count} fire blocks")
-                print(f"   Total fires suppressed this session: {fires_suppressed_total}")
+            if destroyed > 0:
+                fires_suppressed_total += destroyed
+                print(f"\n✅ Progress: {destroyed} fires destroyed")
+                print(f"   Remaining: {remaining}")
+                print(f"   Total session: {fires_suppressed_total}")
                 
                 log_event('fire_suppressed', {
-                    'fire_count': current_fire_count,
-                    'total_suppressed': fires_suppressed_total
+                    'destroyed': destroyed,
+                    'remaining': remaining,
+                    'total': fires_suppressed_total
                 })
-                
-                current_fire_count = 0
+            
+            if remaining > 0:
+                print(f"   🔄 {remaining} fires remain - continuing")
+                state = 'ASSESS'  # Re-assess situation
+            else:
+                print(f"\n🎉 ALL FIRES EXTINGUISHED!")
                 state = 'PATROL'
         
         time.sleep(1.5)
 
 except KeyboardInterrupt:
-    print("\n\n🛑 Shutting down FireBot...")
+    print("\n\n🛑 Shutting down...")
     bot_process.terminate()
     
     print("\n" + "="*70)
     print("📊 SESSION STATISTICS")
     print("="*70)
-    print(f"  Total fires detected:    {fires_detected_total}")
-    print(f"  Total fires suppressed:  {fires_suppressed_total}")
-    print(f"  Patrol cycles completed: {patrol_cycles}")
-    print(f"  Logs saved to:           logs/events.jsonl")
+    print(f"  Fires suppressed:    {fires_suppressed_total}")
+    print(f"  Patrol cycles:       {patrol_cycles}")
+    print(f"  Logs saved to:       logs/events.jsonl")
     print("="*70)
-    
-    print("\n✅ FireBot offline")
-
+    print("\n✅ FireBot offline\n")
