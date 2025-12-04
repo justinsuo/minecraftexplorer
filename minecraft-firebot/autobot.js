@@ -19,7 +19,10 @@ let mcData;
 bot.once('spawn', () => {
   mcData = require('minecraft-data')(bot.version);
   bot.chat('✅ FireBot ready to fight fires!');
-  
+
+  console.log(`Bot game mode: ${bot.game.gameMode}`);
+  console.log(`Bot can dig: ${bot.canDigBlock ? 'yes' : 'no'}`);
+
   // Give equipment after spawn
   setTimeout(() => {
     bot.chat('/give @s minecraft:diamond_sword 1');
@@ -132,7 +135,7 @@ async function equipBestWeapon() {
 // SMART FIRE SUPPRESSION - Sword for small, Water for large
 // ============================================================================
 async function suppressFire() {
-  console.log('⚔️ Starting smart fire suppression...');
+  console.log('⚔️ Starting fire suppression...');
   
   // Find all nearby fires
   const fires = bot.findBlocks({
@@ -148,175 +151,81 @@ async function suppressFire() {
   }
   
   console.log(`Found ${fires.length} fire blocks`);
+  bot.chat(`💧 Using water on ${fires.length} fires!`);
   
-  // DECISION: Sword for small fires (<10), Water for large fires (10+)
-  if (fires.length < 10) {
-    console.log('Strategy: SWORD (small fire)');
-    bot.chat(`⚔️ Attacking ${fires.length} fires with sword!`);
-    return await suppressWithSword(fires);
-  } else {
-    console.log('Strategy: WATER (large fire)');
-    bot.chat(`💧 Using water on ${fires.length} fires!`);
-    return await suppressWithWater(fires);
-  }
-}
-
-// ============================================================================
-// SUPPRESS WITH SWORD
-// ============================================================================
-async function suppressWithSword(fires) {
-  // Equip sword
-  const sword = bot.inventory.items().find(item => item.name.includes('sword'));
-  
-  if (!sword) {
-    bot.chat('/give @s minecraft:diamond_sword 1');
-    await sleep(1000);
-  }
-  
-  const weapon = bot.inventory.items().find(item => item.name.includes('sword'));
-  if (weapon) {
-    await bot.equip(weapon, 'hand');
-    console.log(`✓ Equipped ${weapon.name}`);
-  }
-  
-  let destroyed = 0;
-  
-  for (const firePos of fires) {
-    const fireBlock = bot.blockAt(firePos);
-    if (!fireBlock || fireBlock.name !== 'fire') continue;
-    
-    try {
-      await bot.lookAt(firePos.offset(0.5, 0.5, 0.5));
-      await sleep(100);
-      await bot.dig(fireBlock);
-      destroyed++;
-      
-      if (destroyed % 3 === 0) {
-        bot.chat(`⚔️ ${destroyed}/${fires.length}`);
-      }
-      await sleep(150);
-    } catch (err) {
-      console.log(`Failed: ${err.message}`);
-    }
-  }
-  
-  bot.chat(`✅ Destroyed ${destroyed} fires with sword!`);
-  return destroyed;
+  return await suppressWithWater(fires);
 }
 
 // ============================================================================
 // SUPPRESS WITH WATER
 // ============================================================================
+// ============================================================================
+// SUPPRESS WITH WATER - Place and immediately pickup
+// ============================================================================
 async function suppressWithWater(fires) {
+  console.log('💧 Using water bucket strategy...');
+  
   // Equip water bucket
   let waterBucket = bot.inventory.items().find(item => item.name === 'water_bucket');
   
   if (!waterBucket) {
     bot.chat('/give @s minecraft:water_bucket 16');
-    await sleep(1000);
-  }
-  
-  waterBucket = bot.inventory.items().find(item => item.name === 'water_bucket');
-  if (waterBucket) {
-    await bot.equip(waterBucket, 'hand');
-    console.log('✓ Equipped water bucket');
-  }
-  
-  const waterPlaced = [];
-  let extinguished = 0;
-  
-  // Place water on fires
-  for (const firePos of fires.slice(0, 15)) {
-    const fireBlock = bot.blockAt(firePos);
-    if (!fireBlock || fireBlock.name !== 'fire') continue;
-    
-    try {
-      await bot.lookAt(firePos.offset(0.5, 0.5, 0.5));
-      await sleep(100);
-      
-      // Place water
-      bot.activateItem();
-      await sleep(300);
-      
-      waterPlaced.push(firePos);
-      extinguished++;
-      
-      if (extinguished % 3 === 0) {
-        bot.chat(`💧 ${extinguished}/${fires.length}`);
-      }
-      
-      // Re-equip water bucket if we have more
-      const newBucket = bot.inventory.items().find(i => i.name === 'water_bucket');
-      if (newBucket) {
-        await bot.equip(newBucket, 'hand');
-      }
-      
-    } catch (err) {
-      console.log(`Water placement failed: ${err.message}`);
-    }
-  }
-  
-  bot.chat(`✅ Water placed on ${extinguished} fires!`);
-  
-  // Now clean up water
-  await sleep(2000);
-  await cleanupWater(waterPlaced);
-  
-  return extinguished;
-}
-
-// ============================================================================
-// CLEANUP WATER WITH EMPTY BUCKET
-// ============================================================================
-async function cleanupWater(waterPositions) {
-  if (waterPositions.length === 0) return;
-  
-  console.log('🧹 Cleaning up water...');
-  bot.chat('🧹 Collecting water...');
-  
-  // Equip empty bucket
-  let emptyBucket = bot.inventory.items().find(item => item.name === 'bucket');
-  
-  if (!emptyBucket) {
     bot.chat('/give @s minecraft:bucket 16');
     await sleep(1000);
   }
   
-  emptyBucket = bot.inventory.items().find(item => item.name === 'bucket');
-  if (emptyBucket) {
-    await bot.equip(emptyBucket, 'hand');
-    console.log('✓ Equipped empty bucket');
-  }
+  let extinguished = 0;
   
-  let collected = 0;
-  
-  for (const waterPos of waterPositions) {
+  // Process fires one at a time
+  for (const firePos of fires.slice(0, 20)) {
+    const fireBlock = bot.blockAt(firePos);
+    if (!fireBlock || fireBlock.name !== 'fire') continue;
+    
     try {
-      const block = bot.blockAt(waterPos);
+      // 1. Equip water bucket
+      waterBucket = bot.inventory.items().find(item => item.name === 'water_bucket');
+      if (!waterBucket) {
+        console.log('Out of water buckets');
+        break;
+      }
+      await bot.equip(waterBucket, 'hand');
+      await sleep(200);
       
-      if (block && block.name === 'water') {
-        await bot.lookAt(waterPos.offset(0.5, 0.5, 0.5));
-        await sleep(100);
-        
-        // Right-click to collect water
-        bot.activateItem();
+      // 2. Look at fire
+      await bot.lookAt(firePos.offset(0.5, 0.5, 0.5));
+      await sleep(100);
+      
+      // 3. Place water
+      bot.activateItem();
+      await sleep(500); // Let water extinguish fire
+      
+      // 4. Immediately pick up water with empty bucket
+      const emptyBucket = bot.inventory.items().find(item => item.name === 'bucket');
+      if (emptyBucket) {
+        await bot.equip(emptyBucket, 'hand');
         await sleep(200);
         
-        collected++;
-        
-        // Re-equip empty bucket
-        const newBucket = bot.inventory.items().find(i => i.name === 'bucket');
-        if (newBucket) {
-          await bot.equip(newBucket, 'hand');
-        }
+        // Click same spot to pickup water
+        bot.activateItem();
+        await sleep(300);
       }
+      
+      extinguished++;
+      
+      if (extinguished % 3 === 0) {
+        bot.chat(`💧 ${extinguished}/${fires.length}`);
+        console.log(`Progress: ${extinguished} fires extinguished`);
+      }
+      
     } catch (err) {
-      // Water might have flowed away
+      console.log(`Water failed: ${err.message}`);
     }
   }
   
-  console.log(`✓ Collected ${collected} water blocks`);
-  bot.chat(`✓ Cleaned up ${collected} water blocks`);
+  bot.chat(`✅ Extinguished ${extinguished} fires with water!`);
+  console.log(`Total extinguished: ${extinguished}`);
+  
+  return extinguished;
 }
 
 // ============================================================================
