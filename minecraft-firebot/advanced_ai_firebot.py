@@ -95,8 +95,13 @@ def ask_qwen_multimodal(img, sensor_data, last_action):
     """
     
     fire_count = sensor_data.get('fire_count', 0)
+    actual_fires = sensor_data.get('actual_fires', 0)
+    lava_count = sensor_data.get('lava_count', 0)
     position = sensor_data.get('position', {})
     fires = sensor_data.get('fires', [])
+    health = sensor_data.get('health', 20)
+    is_on_fire = sensor_data.get('is_on_fire', False)
+    is_in_water = sensor_data.get('is_in_water', False)
     
     # Calculate direction to closest fire (if any)
     fire_direction = "UNKNOWN"
@@ -119,19 +124,39 @@ def ask_qwen_multimodal(img, sensor_data, last_action):
     img.save(buffered, format="PNG")
     img_base64 = base64.b64encode(buffered.getvalue()).decode()
     
+    # Emergency status
+    emergency = ""
+    if is_on_fire:
+        emergency = "⚠️ EMERGENCY: YOU ARE ON FIRE! "
+    elif health < 10:
+        emergency = f"⚠️ WARNING: Low health ({health}/20)! "
+    elif is_in_water:
+        emergency = "💧 Currently in water. "
+
     prompt = f"""
 You are a wildfire detection AI with MULTIPLE SENSORS (like a real firefighting robot).
 
+{emergency}
+
 SENSOR READINGS (Thermal/Smoke Detectors):
-- Heat signatures detected: {fire_count}
+- Active fires (spreading): {actual_fires}
+- Lava pools (static): {lava_count}
+- Total heat signatures: {fire_count}
 - Direction to nearest heat: {fire_direction}
 - Your position: ({position.get('x', 0):.0f}, {position.get('y', 0):.0f}, {position.get('z', 0):.0f})
+- Health: {health}/20
+- Status: {"ON FIRE!" if is_on_fire else "In water" if is_in_water else "Normal"}
 - Last action: {last_action}
 
 CAMERA FEED:
 [See image]
 
 Your mission: CORRELATE sensors with vision to make accurate decisions.
+
+PRIORITY RULES:
+1. Active FIRES are more urgent than static LAVA (fires spread and destroy)
+2. If you're on fire or low health, retreat is acceptable
+3. Focus on biggest fire clusters first (houses burning down)
 
 If thermal sensors detect {fire_count} heat sources, you should see visual signs:
 - SMOKE (gray/white clouds or haze)
@@ -213,21 +238,37 @@ def parse_multimodal_response(response):
 
 def save_training_sample(img, sensor_data, ai_analysis, action, decision_num):
     """Save labeled training data"""
-    
+
     fire_count = sensor_data.get('fire_count', 0)
     timestamp = int(time.time())
-    
+
     # Convert RGBA to RGB (fix JPEG error)
     if img.mode == 'RGBA':
         img = img.convert('RGB')
-    
-    # Determine label
-    if fire_count > 0:
+
+    # Determine label based on SENSOR-VISION CORRELATION
+    # Only label as fire_detected if BOTH sensors AND vision agree
+    has_visual_fire_signs = (
+        ai_analysis.get('glow_visible', False) or
+        ai_analysis.get('lava_visible', False)
+    )
+
+    # More reliable: sensors detect fire AND (glow or lava visible)
+    # OR sensors detect fire AND visual_matches is True
+    sensor_visual_match = ai_analysis.get('visual_matches', False)
+
+    if fire_count > 0 and (has_visual_fire_signs or sensor_visual_match):
         label = 'fire_detected'
         folder = f'training_data/fire_detected'
-    else:
+    elif fire_count == 0 and not has_visual_fire_signs:
         label = 'no_fire'
         folder = f'training_data/no_fire'
+    else:
+        # Ambiguous case: sensors say fire but no visual, or visual but no sensors
+        # Save to a separate folder for manual review
+        label = 'uncertain'
+        folder = f'training_data/uncertain'
+        Path(folder).mkdir(exist_ok=True)
     
     # Save image
     filename = f'{folder}/sample_{decision_num}_{timestamp}.jpg'
@@ -304,7 +345,13 @@ print("🚀 Starting!\n")
 try:
     while True:
         decision_count += 1
-        
+
+        # CRITICAL: Do 360° scan first to detect fires in all directions
+        if decision_count % 3 == 0:  # Every 3 decisions, do a full scan
+            print("\n👁️  Performing 360° scan...")
+            send_command('scan_360')
+            time.sleep(3)
+
         # Get sensor data (thermal/smoke)
         sensor_data = get_fire_data()
         fire_count = sensor_data.get('fire_count', 0)
@@ -347,24 +394,65 @@ try:
         
         # Execute action
         if action == 'suppress':
-            print("→ 💧 SUPPRESSING FIRE")
+            print("→ 💧 SUPPRESSING ALL FIRES")
 
-            # Navigate to closest fire first
-            if len(fires) > 0:
-                closest = fires[0]
-                distance = calculate_distance(position, closest)
-                print(f"   Closest fire: ({closest['x']}, {closest['y']}, {closest['z']}) - {distance:.1f}m away")
+            # Stop any ongoing movement/patrol
+            send_command('stop')
+            time.sleep(0.5)
 
-                if distance > 5:
-                    print(f"   🏃 Navigating to fire...")
-                    send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
-                    time.sleep(4)
+            # Keep fighting fires until none remain
+            fires_this_round = 0
+            max_attempts = 10  # Safety limit
+            attempts = 0
 
-            # Now suppress
-            print(f"   💧 Deploying water...")
-            send_command('suppress')
-            fires_suppressed += fire_count
-            time.sleep(6)
+            while attempts < max_attempts:
+                attempts += 1
+
+                # Do a quick 360° scan to detect all fires (especially behind us)
+                send_command('scan_360')
+                time.sleep(2)
+
+                # Refresh fire data
+                sensor_data = get_fire_data()
+                fires = sensor_data.get('fires', [])
+                fire_count = sensor_data.get('fire_count', 0)
+                position = sensor_data.get('position', {})
+                biggest_cluster = sensor_data.get('biggest_cluster_size', 0)
+
+                if fire_count == 0:
+                    print(f"   ✅ All fires extinguished! (suppressed {fires_this_round} fires)")
+                    break
+
+                print(f"\n   🔥 Round {attempts}: {fire_count} fires remaining")
+                print(f"   🏠 Biggest fire cluster: {biggest_cluster} fires")
+
+                # Navigate to closest fire from biggest cluster (fires are pre-sorted)
+                if len(fires) > 0:
+                    closest = fires[0]
+                    distance = calculate_distance(position, closest)
+                    print(f"   → Target: ({closest['x']}, {closest['y']}, {closest['z']}) - {distance:.1f}m away")
+
+                    # ALWAYS navigate to fire - need to be within 8 blocks for suppress to work
+                    if distance > 4:  # Only navigate if far away
+                        print(f"   🏃 Navigating to fire...")
+                        send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
+                        time.sleep(8)  # Wait for navigation to complete
+                    else:
+                        print(f"   ✓ Already close enough")
+                        time.sleep(0.5)
+
+                    # Suppress fires in range (may need to swim through water)
+                    print(f"   💧 Deploying water...")
+                    send_command('suppress')
+                    time.sleep(8)  # Wait for suppress to complete (including all water placements)
+
+                    fires_this_round += 1
+                else:
+                    break
+
+            fires_suppressed += fires_this_round
+            print(f"\n   ✅ Fire suppression complete: {fires_this_round} fires put out")
+            time.sleep(2)
         
         elif action == 'patrol':
             print("→ 🚶 EXPLORING NEW AREA")
