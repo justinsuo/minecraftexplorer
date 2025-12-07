@@ -134,7 +134,7 @@ def ask_qwen_multimodal(img, sensor_data, last_action):
         emergency = "💧 Currently in water. "
 
     prompt = f"""
-You are a wildfire detection AI with MULTIPLE SENSORS (like a real firefighting robot).
+You are a wildfire patrol robot AI. Your mission: PATROL continuously and SUPPRESS fires immediately when detected.
 
 {emergency}
 
@@ -151,39 +151,30 @@ SENSOR READINGS (Thermal/Smoke Detectors):
 CAMERA FEED:
 [See image]
 
-Your mission: CORRELATE sensors with vision to make accurate decisions.
+VISUAL ANALYSIS REQUIRED:
+Look for these fire indicators:
+- GLOW/BRIGHT AREAS (orange, red, yellow light from fire/lava)
+- LAVA (bright orange/red liquid blocks)
 
-PRIORITY RULES:
-1. Active FIRES are more urgent than static LAVA (fires spread and destroy)
-2. If you're on fire or low health, retreat is acceptable
-3. Focus on biggest fire clusters first (houses burning down)
+CORE RULES (FOLLOW STRICTLY):
+1. If thermal sensors show {fire_count} > 0 → You MUST respond with "SUPPRESS_FIRE"
+2. If thermal sensors show 0 fires → You MUST keep moving (PATROL or MOVE_FORWARD)
+3. NEVER stand still - always be moving or suppressing fires
+4. If you see the same view as last time → TURN to explore new area
+5. Prefer MOVE_FORWARD over PATROL when already moving well
 
-If thermal sensors detect {fire_count} heat sources, you should see visual signs:
-- SMOKE (gray/white clouds or haze)
-- ORANGE/RED GLOW (fire light)
-- LAVA (bright orange/red liquid)
-- HEAT SHIMMER or bright areas
-- FLAMES (orange/yellow flickering)
-
-CRITICAL ANALYSIS:
-1. Do you see SMOKE (gray/white haze, clouds)? → YES/NO
-2. Do you see GLOW/BRIGHT AREAS (orange, red, yellow)? → YES/NO
-3. Do you see LAVA (liquid orange/red)? → YES/NO
-4. Does the visual match thermal reading of {fire_count} heat sources? → YES/NO
-
-DECISION RULES:
-- If thermal={fire_count} > 0 AND you see visual signs → SUPPRESS_FIRE (go put it out!)
-- If thermal > 0 but NO visual signs → TURN_{fire_direction} (turn to face fire)
-- If thermal=0 (no fire) → PATROL (explore new area) OR MOVE_FORWARD (keep exploring)
-- If stuck (same view as before) → TURN_LEFT or TURN_RIGHT
+DECISION PRIORITY:
+- Fire detected (thermal > 0) → SUPPRESS_FIRE (ALWAYS!)
+- No fire + moving well → MOVE_FORWARD (keep exploring)
+- No fire + stuck/same view → TURN_RIGHT or TURN_LEFT (unstuck yourself)
+- No fire + haven't moved much → PATROL (explore new area)
 
 Think carefully and output EXACTLY:
-SMOKE_VISIBLE: YES/NO
 GLOW_VISIBLE: YES/NO
 LAVA_VISIBLE: YES/NO
-VISUAL_MATCHES_SENSORS: YES/NO
+STUCK: YES/NO (are you seeing the same view as before?)
 CONFIDENCE: [0-100]%
-ACTION: SUPPRESS_FIRE / TURN_LEFT / TURN_RIGHT / MOVE_FORWARD / PATROL / SCAN_360
+ACTION: SUPPRESS_FIRE / TURN_LEFT / TURN_RIGHT / MOVE_FORWARD / PATROL
 REASON: [max 15 words why you chose this action]
 """
 
@@ -201,35 +192,33 @@ REASON: [max 15 words why you chose this action]
 
 def parse_multimodal_response(response):
     """Extract action and analysis from AI response"""
-    
+
     response_upper = response.upper()
-    
+
     # Extract visual analysis
     analysis = {
-        'smoke_visible': 'YES' in response and 'SMOKE_VISIBLE: YES' in response_upper,
-        'glow_visible': 'YES' in response and 'GLOW_VISIBLE: YES' in response_upper,
-        'lava_visible': 'YES' in response and 'LAVA_VISIBLE: YES' in response_upper,
-        'visual_matches': 'VISUAL_MATCHES_SENSORS: YES' in response_upper
+        'smoke_visible': 'SMOKE_VISIBLE: YES' in response_upper,
+        'glow_visible': 'GLOW_VISIBLE: YES' in response_upper,
+        'lava_visible': 'LAVA_VISIBLE: YES' in response_upper,
+        'visual_matches': 'VISUAL_MATCHES_SENSORS: YES' in response_upper,
+        'stuck': 'STUCK: YES' in response_upper
     }
-    
-    # Extract action
-    if 'SUPPRESS_FIRE' in response_upper:
+
+    # Extract action - prioritize suppress, then movement
+    if 'SUPPRESS_FIRE' in response_upper or 'SUPPRESS FIRE' in response_upper:
         action = 'suppress'
-    elif 'TURN_LEFT' in response_upper:
-        action = 'turn_left'
-    elif 'TURN_RIGHT' in response_upper:
-        action = 'turn_right'
-    elif 'TURN_NORTH' in response_upper or 'TURN_SOUTH' in response_upper or 'TURN_EAST' in response_upper or 'TURN_WEST' in response_upper:
-        action = 'turn_right'  # Generic turn
-    elif 'MOVE_FORWARD' in response_upper:
+    elif 'MOVE_FORWARD' in response_upper or 'MOVE FORWARD' in response_upper:
         action = 'move_forward'
-    elif 'SCAN_360' in response_upper:
-        action = 'scan_360'
+    elif 'TURN_LEFT' in response_upper or 'TURN LEFT' in response_upper:
+        action = 'turn_left'
+    elif 'TURN_RIGHT' in response_upper or 'TURN RIGHT' in response_upper:
+        action = 'turn_right'
     elif 'PATROL' in response_upper:
         action = 'patrol'
     else:
-        action = 'patrol'
-    
+        # Default: keep moving forward
+        action = 'move_forward'
+
     return action, analysis
 
 # ============================================================================
@@ -253,19 +242,21 @@ def save_training_sample(img, sensor_data, ai_analysis, action, decision_num):
         ai_analysis.get('lava_visible', False)
     )
 
-    # More reliable: sensors detect fire AND (glow or lava visible)
-    # OR sensors detect fire AND visual_matches is True
+    # More reliable: sensors detect fire AND glow/lava visible
+    # Don't trust AI's visual_matches claim alone - require actual visual signs
     sensor_visual_match = ai_analysis.get('visual_matches', False)
 
-    if fire_count > 0 and (has_visual_fire_signs or sensor_visual_match):
+    # FIXED LOGIC: Require BOTH sensors AND visual signs for fire_detected
+    if fire_count > 0 and has_visual_fire_signs:
         label = 'fire_detected'
         folder = f'training_data/fire_detected'
-    elif fire_count == 0 and not has_visual_fire_signs:
+    elif fire_count == 0:
+        # No sensor fire detected -> no_fire (regardless of visual false positives)
         label = 'no_fire'
         folder = f'training_data/no_fire'
     else:
-        # Ambiguous case: sensors say fire but no visual, or visual but no sensors
-        # Save to a separate folder for manual review
+        # Ambiguous case: sensors say fire but NO visual signs (glow/lava)
+        # This catches false sensor readings
         label = 'uncertain'
         folder = f'training_data/uncertain'
         Path(folder).mkdir(exist_ok=True)
@@ -343,155 +334,139 @@ print("🚀 Starting!\n")
 
 
 try:
+    # Start with initial patrol movement
+    print("🚶 Starting initial patrol...")
+    send_command('patrol')
+
+    patrol_steps = 0  # Track how long we've been patrolling
+
     while True:
         decision_count += 1
 
-        # CRITICAL: Do 360° scan first to detect fires in all directions
-        if decision_count % 3 == 0:  # Every 3 decisions, do a full scan
-            print("\n👁️  Performing 360° scan...")
-            send_command('scan_360')
-            time.sleep(3)
+        print(f"\n{'='*70}")
+        print(f"DECISION #{decision_count}")
+        print(f"{'='*70}")
 
-        # Get sensor data (thermal/smoke)
+        # Quick sensor check
         sensor_data = get_fire_data()
         fire_count = sensor_data.get('fire_count', 0)
         fires = sensor_data.get('fires', [])
         position = sensor_data.get('position', {})
-        
-        # Capture visual camera
-        img = capture_screen()
-        
-        print(f"\n{'='*70}")
-        print(f"DECISION #{decision_count}")
-        print(f"{'='*70}")
+
         print(f"📍 Position: ({position.get('x', 0):.0f}, {position.get('y', 0):.0f}, {position.get('z', 0):.0f})")
         print(f"🌡️  Thermal sensors: {fire_count} heat signatures")
-        print(f"🔙 Last action: {last_action}")
-        
-        # Multi-modal AI decision
-        print("🤖 AI analyzing: Sensors + Vision...")
-        ai_response = ask_qwen_multimodal(img, sensor_data, last_action)
-        
-        print(f"\n💭 AI MULTI-MODAL ANALYSIS:")
-        print("-" * 70)
-        print(ai_response)
-        print("-" * 70)
-        
-        # Parse decision
-        action, analysis = parse_multimodal_response(ai_response)
-        
-        print(f"\n📊 SENSOR-VISION CORRELATION:")
-        print(f"   Smoke visible: {analysis['smoke_visible']}")
-        print(f"   Glow visible: {analysis['glow_visible']}")
-        print(f"   Lava visible: {analysis['lava_visible']}")
-        print(f"   Visual matches sensors: {analysis['visual_matches']}")
-        print(f"\n✅ ACTION DECIDED: {action.upper()}")
-        
-        # Save training data
-        sample_file = save_training_sample(img, sensor_data, analysis, action, decision_count)
-        training_samples_collected += 1
-        print(f"💾 Training sample saved: {sample_file}")
-        
-        # Execute action
+
+        # =================================================================
+        # FIRE DETECTED - Drop everything and suppress immediately
+        # =================================================================
+        if fire_count > 0:
+            print("🔥🔥🔥 FIRE DETECTED - ENGAGING IMMEDIATELY 🔥🔥🔥")
+
+            # Quick capture for training data (don't wait for AI)
+            img = capture_screen()
+
+            # Default analysis (will be updated if AI finishes in time)
+            analysis = {'glow_visible': False, 'lava_visible': False, 'stuck': False}
+
+            # Save training data immediately (AI analysis will be default for now)
+            try:
+                sample_file = save_training_sample(img, sensor_data, analysis, 'suppress', decision_count)
+                training_samples_collected += 1
+                print(f"💾 Saved: {sample_file}")
+            except:
+                pass
+
+            # Don't wait - immediately suppress fire
+            action = 'suppress'
+
+        # =================================================================
+        # NO FIRE - Simple patrol logic (NO AI needed for movement!)
+        # =================================================================
+        else:
+            print(f"✅ No fire - patrolling (step {patrol_steps})")
+
+            # Simple rule-based movement (fast and reliable)
+            if patrol_steps % 15 == 0 and patrol_steps > 0:
+                # Every 15 steps, turn to explore new direction
+                action = 'turn_right'
+                print("→ 🔄 TURNING to explore new area")
+                patrol_steps = 0
+            else:
+                # Keep moving forward
+                action = 'move_forward'
+                print("→ ⬆️  MOVING FORWARD")
+
+            patrol_steps += 1
+
+            # Only capture training data occasionally (every 5th decision)
+            if decision_count % 5 == 0:
+                print("📸 Capturing training data...")
+                img = capture_screen()
+
+                # Default analysis (no AI needed for simple movement)
+                analysis = {'glow_visible': False, 'lava_visible': False, 'stuck': False}
+
+                # Save training data
+                try:
+                    sample_file = save_training_sample(img, sensor_data, analysis, action, decision_count)
+                    training_samples_collected += 1
+                    print(f"💾 Saved: {sample_file}")
+                except:
+                    pass
+
+        # =================================================================
+        # EXECUTE ACTION - Fast and simple
+        # =================================================================
         if action == 'suppress':
-            print("→ 💧 SUPPRESSING ALL FIRES")
-
-            # Stop any ongoing movement/patrol
+            print("→ 💧 SUPPRESSING FIRE")
             send_command('stop')
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-            # Keep fighting fires until none remain
-            fires_this_round = 0
-            max_attempts = 10  # Safety limit
-            attempts = 0
+            # Navigate and suppress
+            if len(fires) > 0:
+                closest = fires[0]
+                distance = calculate_distance(position, closest)
+                print(f"   Target: {distance:.1f}m away")
 
-            while attempts < max_attempts:
-                attempts += 1
+                if distance > 4:
+                    send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
+                    time.sleep(4)  # Faster navigation
 
-                # Do a quick 360° scan to detect all fires (especially behind us)
-                send_command('scan_360')
-                time.sleep(2)
+                send_command('suppress')
+                time.sleep(5)  # Faster suppression
+                fires_suppressed += 1
 
-                # Refresh fire data
-                sensor_data = get_fire_data()
-                fires = sensor_data.get('fires', [])
-                fire_count = sensor_data.get('fire_count', 0)
-                position = sensor_data.get('position', {})
-                biggest_cluster = sensor_data.get('biggest_cluster_size', 0)
-
-                if fire_count == 0:
-                    print(f"   ✅ All fires extinguished! (suppressed {fires_this_round} fires)")
-                    break
-
-                print(f"\n   🔥 Round {attempts}: {fire_count} fires remaining")
-                print(f"   🏠 Biggest fire cluster: {biggest_cluster} fires")
-
-                # Navigate to closest fire from biggest cluster (fires are pre-sorted)
-                if len(fires) > 0:
-                    closest = fires[0]
-                    distance = calculate_distance(position, closest)
-                    print(f"   → Target: ({closest['x']}, {closest['y']}, {closest['z']}) - {distance:.1f}m away")
-
-                    # ALWAYS navigate to fire - need to be within 8 blocks for suppress to work
-                    if distance > 4:  # Only navigate if far away
-                        print(f"   🏃 Navigating to fire...")
-                        send_command('goto', x=closest['x'], y=closest['y'], z=closest['z'])
-                        time.sleep(8)  # Wait for navigation to complete
-                    else:
-                        print(f"   ✓ Already close enough")
-                        time.sleep(0.5)
-
-                    # Suppress fires in range (may need to swim through water)
-                    print(f"   💧 Deploying water...")
-                    send_command('suppress')
-                    time.sleep(8)  # Wait for suppress to complete (including all water placements)
-
-                    fires_this_round += 1
-                else:
-                    break
-
-            fires_suppressed += fires_this_round
-            print(f"\n   ✅ Fire suppression complete: {fires_this_round} fires put out")
-            time.sleep(2)
-        
-        elif action == 'patrol':
-            print("→ 🚶 EXPLORING NEW AREA")
+            print("→ 🚶 Resuming patrol")
             send_command('patrol')
-            time.sleep(6)
-        
-        elif action == 'scan_360':
-            print("→ 👁️  SCANNING 360°")
-            send_command('scan_360')
-            time.sleep(5)
-        
+            patrol_steps = 0
+
         elif action == 'move_forward':
-            print("→ ⬆️  MOVING FORWARD")
             send_command('move_forward')
-            time.sleep(2)
-        
-        elif action == 'turn_left':
-            print("→ ⬅️  TURNING LEFT")
-            send_command('turn_left')
-            time.sleep(1)
-        
+            time.sleep(0.8)  # Quick forward movement
+
         elif action == 'turn_right':
-            print("→ ➡️  TURNING RIGHT")
             send_command('turn_right')
-            time.sleep(1)
-        
+            time.sleep(1.0)  # Quick turn
+
+        elif action == 'turn_left':
+            send_command('turn_left')
+            time.sleep(1.0)  # Quick turn
+
         # Log
-        log_event('multimodal_decision', {
-            'decision_number': decision_count,
-            'action': action,
-            'sensor_fire_count': fire_count,
-            'visual_analysis': analysis,
-            'last_action': last_action,
-            'fires_suppressed_total': fires_suppressed
-        })
-        
+        try:
+            log_event('multimodal_decision', {
+                'decision_number': decision_count,
+                'action': action,
+                'sensor_fire_count': fire_count,
+                'fires_suppressed_total': fires_suppressed
+            })
+        except:
+            pass
+
         last_action = action
-        
-        time.sleep(1.5)
+
+        # Fast loop - keep moving!
+        time.sleep(0.2)
 
 except KeyboardInterrupt:
     print("\n\n🛑 Shutting down Multi-Modal AI FireBot...")
